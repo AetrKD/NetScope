@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetScope Pro - Packet Intelligence</title>
+    <meta name="description" content="Premium Real-time Network Packet Capture System">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Use Outfit for headers, Inter for body, JetBrains Mono for data -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css?v=37">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="/static/js/main.js?v=37" defer></script>
+    <script src="/static/js/ui.js?v=37" defer></script>
+</head>
+<body>
+
+    <!-- ═══════════════ 사이드바 ═══════════════ -->
+    <aside class="sidebar">
+        <div class="sidebar-logo">
+            <div class="logo-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 17L12 22L22 17" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 12L12 17L22 12" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </div>
+            <div class="logo-text">
+                <h1>NetScope</h1>
+                <span>Packet Intelligence</span>
+            </div>
+        </div>
+
+        <div class="status-row">
+            <div class="status-indicator">
+                <div class="status-dot"></div>
+                <span id="status-text" class="status-text">Capture Active</span>
+            </div>
+        </div>
+
+        <!-- 내비게이션 탭 -->
+        <nav class="nav-menu">
+            <div class="sidebar-tab active" id="tabLive">
+                <span class="tab-icon">🔴</span>
+                <span class="tab-label">실시간 모니터</span>
+            </div>
+            <div class="sidebar-tab" id="tabDevices">
+                <span class="tab-icon">🖥️</span>
+                <span class="tab-label">등록된 IP</span>
+            </div>
+            <div class="sidebar-tab" id="tabSuspicious">
+                <span class="tab-icon">🚨</span>
+                <span class="tab-label">의심 트래픽 탐지</span>
+            </div>
+        </nav>
+
+        <div class="stats-container">
+            <div class="stat-section-title">실시간 통계</div>
+            <div class="stat-cards">
+                <div class="stat-card total">
+                    <div class="stat-info">
+                        <div class="stat-label">Total Packets</div>
+                        <div class="stat-value" id="count-total">0</div>
+                    </div>
+                    <div class="stat-icon">📦</div>
+                </div>
+                <div class="stat-card inbound">
+                    <div class="stat-info">
+                        <div class="stat-label">Inbound</div>
+                        <div class="stat-value" id="count-in">0</div>
+                    </div>
+                    <div class="stat-icon">📥</div>
+                </div>
+                <div class="stat-card outbound">
+                    <div class="stat-info">
+                        <div class="stat-label">Outbound</div>
+                        <div class="stat-value" id="count-out">0</div>
+                    </div>
+                    <div class="stat-icon">📤</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="sidebar-footer">
+            <div class="sidebar-tab settings-tab" id="menuSettingsBtn" style="flex:1;">
+                <span class="tab-icon">⚙️</span>
+                <span class="tab-label">시스템 설정</span>
+            </div>
+            <div class="theme-toggle" id="themeToggle" title="테마 변경 (라이트/다크)">
+                <div class="theme-toggle-track"></div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- ═══════════════ 메인 콘텐츠 ═══════════════ -->
+    <main class="main">
+        <!-- 배경 장식 효과 -->
+        <div class="bg-glow bg-glow-1"></div>
+        <div class="bg-glow bg-glow-2"></div>
+
+        <header class="top-bar">
+            <div class="title-area">
+                <h2 id="topTitle">실시간 패킷 모니터</h2>
+                <p class="subtitle" id="topSubtitle">네트워크 트래픽을 실시간으로 캡처하고 분석합니다.</p>
+            </div>
+            <div class="action-area">
+                <button id="aiRiskAssessBtn" class="btn btn-outline" style="display:none; border-color: var(--accent-amber); color: var(--accent-amber); margin-right: 10px;">
+                    <span class="btn-icon">🤖</span> 해당 IP 위험도 분석
+                </button>
+                <button id="backToDevicesBtn" class="btn btn-outline" style="display:none; border-color: var(--accent-blue); color: var(--accent-blue);">
+                    <span class="btn-icon">⬅️</span> 장비 리스트로 돌아가기
+                </button>
+                <select id="maxPacketsSelect" class="btn-select">
+                    <option value="50">최대 50개 유지</option>
+                    <option value="100" selected>최대 100개 유지</option>
+                    <option value="300">최대 300개 유지</option>
+                    <option value="500">최대 500개 유지</option>
+                </select>
+                <select id="archiveMaxPacketsSelect" class="btn-select" style="display:none;">
+                    <option value="200" selected>200개 보기</option>
+                    <option value="500">500개 보기</option>
+                    <option value="1000">1000개 보기</option>
+                </select>
+
+                <div class="divider"></div>
+                <button id="pauseBtn" class="btn btn-primary btn-pause">
+                    <span class="btn-icon">⏸</span> <span class="btn-text">일시정지</span>
+                </button>
+            </div>
+        </header>
+
+        <section class="filter-section">
+            <div class="filter-glass-card">
+                <div class="filter-header">
+                    <span class="filter-icon">🔍</span>
+                    <span class="filter-title">Advanced Filters</span>
+                </div>
+                <div class="filter-controls">
+                    <div class="filter-group" id="archiveDateInputs" style="display:none;">
+                        <input type="datetime-local" id="filterStart" step="1" class="filter-input" title="시작 시간">
+                        <span class="filter-separator">~</span>
+                        <input type="datetime-local" id="filterEnd" step="1" class="filter-input" title="종료 시간">
+                    </div>
+                    
+                    <div class="filter-group">
+                        <input type="text" id="filterIp" placeholder="IP Address" class="filter-input input-ip">
+                        <input type="text" id="filterPort" placeholder="Port" class="filter-input input-port">
+                    </div>
+                    
+                    <div class="filter-group">
+                        <select id="filterProto" class="filter-select">
+                            <option value="">Protocol (All)</option>
+                            <option value="TCP">TCP</option>
+                            <option value="UDP">UDP</option>
+                        </select>
+                        <select id="filterDir" class="filter-select">
+                            <option value="">Direction (All)</option>
+                            <option value="INBOUND">Inbound</option>
+                            <option value="OUTBOUND">Outbound</option>
+                        </select>
+                    </div>
+
+                    <div class="filter-group">
+                        <input type="text" id="filterMinSize" placeholder="Min B" class="filter-input input-size">
+                        <span class="filter-separator">-</span>
+                        <input type="text" id="filterMaxSize" placeholder="Max B" class="filter-input input-size">
+                    </div>
+
+                    <div class="filter-actions">
+                        <button id="applyFilterBtn" class="btn btn-primary btn-sm">적용</button>
+                        <button id="resetFilterBtn" class="btn btn-ghost btn-sm">초기화</button>
+                        <button id="deleteSelectedBtn" class="btn btn-danger btn-sm" style="display:none;">🗑️ 선택 삭제</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="charts-grid">
+            <!-- 차트 1: 초당 트래픽 -->
+            <div class="chart-card">
+                <div class="chart-header">
+                    <div class="chart-title-wrap">
+                        <span class="chart-icon">📈</span>
+                        <span class="chart-title">Network Traffic (PPS)</span>
+                    </div>
+                    <div class="pps-badge"><span class="pps-icon">⚡</span> <span id="pps-display">0</span> pkt/s</div>
+                </div>
+                <div class="chart-body"><canvas id="trafficChart"></canvas></div>
+            </div>
+
+            <!-- 차트 2: Top 5 IP -->
+            <div class="chart-card">
+                <div class="chart-header">
+                    <div class="chart-title-wrap">
+                        <span class="chart-icon">🌐</span>
+                        <span class="chart-title">Active Connections (Top 5)</span>
+                    </div>
+                </div>
+                <div class="chart-body"><canvas id="topIpChart"></canvas></div>
+            </div>
+        </section>
+
+        <!-- ── 공통 장비 등록 폼 ── -->
+        <div id="aliasFormContainer" style="padding: 0 40px; margin-bottom: -10px; display:none; z-index: 10; position: relative;">
+            <div class="filter-bar" style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 15px 20px; border-radius: 10px; border: 1px solid var(--border-light); background: rgba(30, 41, 59, 0.5);">
+                <span style="font-size: 1.2rem; margin-right: 5px;">🖥️</span>
+                <input type="text" id="aliasIp" placeholder="192.168.x.x" class="filter-input" style="width:140px;">
+                <input type="text" id="aliasName" placeholder="장비 이름 (예: 메인 서버)" class="filter-input" style="width:180px;">
+                <input type="text" id="aliasDesc" placeholder="설명 (선택)..." class="filter-input" style="flex:1;">
+                <select id="aliasPolicy" class="filter-input" style="width:130px; cursor:pointer;">
+                    <option value="SAVE_ALL">전부 저장</option>
+                    <option value="DO_NOT_SAVE">저장 안함</option>
+                    <option value="AUTO">자동 (AI)</option>
+                </select>
+                <button id="addAliasBtn" class="btn btn-primary" style="margin-left: 5px;">+ 장비 등록</button>
+            </div>
+        </div>
+
+        <!-- ── 등록된 장비 모니터링 뷰 ── -->
+        <section id="devicesView" class="devices-view" style="display:none;">
+            <div id="devicesGrid" class="devices-list">
+                <!-- 장비 리스트 렌더링 영역 -->
+            </div>
+        </section>
+
+        <!-- ── 의심 트래픽 IP 모니터링 뷰 ── -->
+        <section id="suspiciousIpView" class="devices-view" style="display:none;">
+            <div id="suspiciousIpGrid" class="devices-list">
+                <!-- 의심 트래픽 IP 리스트 렌더링 영역 -->
+            </div>
+        </section>
+
+        <section class="packet-section">
+            <div class="packet-table-container">
+                <div class="packet-header">
+                    <div class="col-checkbox"><input type="checkbox" id="selectAllCheckbox" class="custom-checkbox"></div>
+                    <div class="col-no">#</div>
+                    <div class="col-time">Time</div>
+                    <div class="col-src">Source</div>
+                    <div class="col-dst">Destination</div>
+                    <div class="col-proto">Proto</div>
+                    <div class="col-dir">Direction</div>
+                    <div class="col-size">Size</div>
+                    <div class="col-reason" id="colReasonHeader" style="display:none;">탐지 사유</div>
+                </div>
+                <div class="packet-list-wrap">
+                    <div id="packetList">
+                        <div class="empty-state">
+                            <div class="empty-icon">📡</div>
+                            <div class="empty-title">Waiting for traffic</div>
+                            <div class="empty-desc">패킷을 수신 대기 중입니다...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="pagination-wrap" id="paginationWrap" style="display:none;"></div>
+        </section>
+    </main>
+
+    <div class="resizer collapsed" id="resizer"></div>
+
+    <!-- ═══════════════ 패킷 상세 패널 ═══════════════ -->
+    <aside class="ai-panel collapsed" id="aiPanel">
+        <div id="sideToggleBar" class="side-toggle-bar">
+            <span id="sideToggleIcon">◀</span>
+        </div>
+        <div class="panel-inner">
+            <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
+                <h3 style="margin:0;">Packet Details</h3>
+                <button id="closePanelBtn" class="btn btn-ghost btn-sm" style="padding:4px 8px; font-size:1.2rem; cursor:pointer;">✕</button>
+            </div>
+            <div class="hex-panel-title" id="hexTitle" style="display:none">
+                <span class="hex-icon">⬡</span> Packet Data
+            </div>
+            <div id="hexBox" style="display:none">
+                <div class="empty-state" style="padding: 20px 0;">패킷을 선택하세요.</div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- 모달: 장비 삭제 확인 -->
+    <div class="modal-overlay" id="deleteConfirmModal">
+        <div class="modal-content" style="max-width: 400px; padding: 30px;">
+            <div style="text-align: center; margin-bottom: 20px;">
+                <div style="font-size: 3rem; margin-bottom: 10px;">⚠️</div>
+                <h3 style="margin: 0; color: var(--accent-amber);">정말로 삭제하시겠습니까?</h3>
+            </div>
+            <p style="text-align: center; color: var(--text-secondary); margin-bottom: 30px; line-height: 1.5;">
+                장비를 삭제하면 데이터베이스에 저장된 이 장비의 <strong style="color: var(--accent-red);">과거 패킷 내역도 모두 함께 영구적으로 삭제</strong>됩니다.<br>
+                삭제할 대상: <strong id="deleteTargetIp" style="color: white;"></strong>
+            </p>
+            <div style="display: flex; gap: 10px; justify-content: center;">
+                <button class="btn btn-outline" id="cancelDeleteBtn" style="flex: 1;">취소</button>
+                <button class="btn btn-primary" id="confirmDeleteBtn" style="flex: 1; background-color: var(--accent-red);">영구 삭제</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 모달: 시스템 설정 -->
+    <div class="modal-overlay" id="configModal">
+        <div class="modal-content modal-sm">
+            <div class="modal-header">
+                <h3>⚙️ 시스템 설정</h3>
+                <button class="modal-close" id="closeConfigModal">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="settings-group">
+                    <h4>📡 캡처 인터페이스 설정</h4>
+                    <p class="modal-desc">서버 바인딩 주소와 패킷 캡처를 수행할 네트워크 어댑터를 선택합니다.</p>
+                    
+                    <div class="form-group">
+                        <label>Host Address</label>
+                        <input type="text" id="cfgHost" class="input-lg" placeholder="0.0.0.0">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Port</label>
+                        <input type="number" id="cfgPort" class="input-lg" placeholder="25565">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Network Adapter</label>
+                        <select id="cfgIface" class="input-lg">
+                            <option value="all">🌐 자동 선택 (Internet Route)</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="saveConfigBtn" class="btn btn-primary btn-block">💾 저장 및 적용</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
