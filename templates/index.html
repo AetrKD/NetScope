@@ -8,10 +8,10 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- Use Outfit for headers, Inter for body, JetBrains Mono for data -->
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/style.css?v=37">
+    <link rel="stylesheet" href="/static/css/style.css?v=39">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="/static/js/main.js?v=37" defer></script>
-    <script src="/static/js/ui.js?v=37" defer></script>
+    <script src="/static/js/main.js?v=43" defer></script>
+    <script src="/static/js/ui.js?v=39" defer></script>
 </head>
 <body>
 
@@ -51,6 +51,10 @@
             <div class="sidebar-tab" id="tabSuspicious">
                 <span class="tab-icon">🚨</span>
                 <span class="tab-label">의심 트래픽 탐지</span>
+            </div>
+            <div class="sidebar-tab" id="tabIncidents">
+                <span class="tab-icon">📄</span>
+                <span class="tab-label">사고 분석 리포트</span>
             </div>
         </nav>
 
@@ -227,6 +231,17 @@
         <section id="suspiciousIpView" class="devices-view" style="display:none;">
             <div id="suspiciousIpGrid" class="devices-list">
                 <!-- 의심 트래픽 IP 리스트 렌더링 영역 -->
+            </div>
+        </section>
+
+        <!-- ── 사고 분석 리포트 뷰 ── -->
+        <section id="incidentsView" class="devices-view" style="display:none; padding: 20px 40px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="font-size: 1.5rem; color: var(--text-primary);">자동 사고 분석 리포트</h2>
+                <button id="refreshIncidentsBtn" class="btn btn-primary btn-sm">새로고침</button>
+            </div>
+            <div id="incidentsGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(600px, 1fr)); gap: 20px;">
+                <!-- 리포트 리스트 렌더링 영역 -->
             </div>
         </section>
 

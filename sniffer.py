@@ -8,6 +8,7 @@ import threading
 import ctypes
 import json
 import time
+import collections
 from pathlib import Path
 from datetime import datetime
 from scapy.all import sniff, IP, TCP, UDP, ICMP, Ether, wrpcap, conf
@@ -85,16 +86,20 @@ class PacketSniffer:
         self.is_paused = False
         self.alias_policies = {}
         self.current_filter = {}
-        self.packet_rules = []
         self.emit_callback = None
         self._running = False
         self.capture_thread = None
+        self.recent_packets = collections.deque(maxlen=2000)
+        self.active_incidents = {}
+        self.incident_callback = None
+        self.incident_start_callback = None
         
+    def set_incident_start_callback(self, cb): self.incident_start_callback = cb
+    def set_incident_callback(self, cb): self.incident_callback = cb
     def set_emit_callback(self, cb): self.emit_callback = cb
     def set_pause(self, paused: bool): self.is_paused = paused
     def set_aliases_policy(self, policies: dict): self.alias_policies = policies
     def set_filter(self, f_dict: dict): self.current_filter = f_dict
-    def set_packet_rules(self, rules: list): self.packet_rules = rules
 
     def _packet_handler(self, packet):
         if self.is_paused:
@@ -108,13 +113,15 @@ class PacketSniffer:
         proto_name = "OTHER"
         sport, dport = None, None
 
-        if packet.haslayer(TCP):
+        if packet.haslayer(TCP) or (packet.haslayer(IP) and packet[IP].proto == 6):
             proto_name = "TCP"
-            sport, dport = packet[TCP].sport, packet[TCP].dport
-        elif packet.haslayer(UDP):
+            if packet.haslayer(TCP):
+                sport, dport = packet[TCP].sport, packet[TCP].dport
+        elif packet.haslayer(UDP) or (packet.haslayer(IP) and packet[IP].proto == 17):
             proto_name = "UDP"
-            sport, dport = packet[UDP].sport, packet[UDP].dport
-        elif packet.haslayer(ICMP):
+            if packet.haslayer(UDP):
+                sport, dport = packet[UDP].sport, packet[UDP].dport
+        elif packet.haslayer(ICMP) or (packet.haslayer(IP) and packet[IP].proto == 1):
             proto_name = "ICMP"
 
         if dst in LOCAL_IPS: direction = "INBOUND"
@@ -126,32 +133,8 @@ class PacketSniffer:
         if not check_filter_match(self.current_filter, src, dst, sport, dport, proto_name, direction, pkt_len, True):
             return
 
-        is_highlight = False
-        if self.packet_rules:
-            for rule in self.packet_rules:
-                if check_filter_match(rule, src, dst, sport, dport, proto_name, direction, pkt_len, False):
-                    action = rule.get('action', 'HIGHLIGHT')
-                    if action == 'IGNORE':
-                        return
-                    elif action == 'HIGHLIGHT':
-                        is_highlight = True
-                        break
-
         self.packet_count += 1
         time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-        packet_data = {
-            "no": self.packet_count,
-            "time": time_str,
-            "src": src,
-            "dst": dst,
-            "proto": proto_name,
-            "len": pkt_len,
-            "summary": packet.summary(),
-            "direction": direction,
-            "raw": bytes(packet).hex(),
-            "highlight": is_highlight
-        }
 
         is_saved = False
         src_policy = self.alias_policies.get(src, {}).get('policy')
@@ -179,26 +162,85 @@ class PacketSniffer:
                 is_suspicious = True
                 suspicion_reason = "TCP XMAS Scan 의심"
 
-        packet_data["suspicious"] = is_suspicious
-        packet_data["suspicion_reason"] = suspicion_reason
+        # 패킷 헥스 데이터는 DB에 저장해야 하거나, 브로드캐스트할 때만 필요.
+        # 하지만 브로드캐스트 성능을 위해 무조건 생성하지 않고 저장/의심 패킷인 경우에만 생성
+        raw_hex = bytes(packet).hex() if (is_saved or is_suspicious) else ""
+
+        packet_data = {
+            "no": self.packet_count,
+            "time": time_str,
+            "src": src,
+            "dst": dst,
+            "sport": sport,
+            "dport": dport,
+            "proto": proto_name,
+            "len": pkt_len,
+            "summary": packet.summary(),
+            "direction": direction,
+            "raw": raw_hex,
+            "suspicious": is_suspicious,
+            "suspicion_reason": suspicion_reason
+        }
 
         if is_suspicious and src not in self.alias_policies:
             try:
-                main_db.set_alias(src, "", "SAVE_ALL", "")
-                self.alias_policies[src] = {'name': '', 'policy': 'SAVE_ALL'}
-                is_saved = True
+                main_db.set_alias(src, "", "AUTO", "의심 트래픽 자동 감지")
+                self.alias_policies[src] = {'name': '', 'policy': 'AUTO'}
+                src_policy = "AUTO"
             except Exception as e:
                 print(f"[ERROR] 의심 IP 자동 등록 실패: {e}")
 
-        if is_saved or is_highlight or is_suspicious:
+        if is_saved or is_suspicious:
             save_packet_async(
                 packet_data, 
                 time_str, 
                 is_saved=is_saved, 
-                is_highlighted=is_highlight, 
                 is_suspicious=is_suspicious, 
                 suspicion_reason=suspicion_reason
             )
+
+        now = time.time()
+        self.recent_packets.append((now, packet_data))
+
+        # Check AUTO policy for incident reporting
+        if is_suspicious and (src_policy == 'AUTO' or dst_policy == 'AUTO'):
+            trigger_ip = src if src_policy == 'AUTO' else dst
+            if trigger_ip not in self.active_incidents:
+                # Start new incident
+                
+                # 즉시 UI 알림 전송
+                if self.incident_start_callback:
+                    self.incident_start_callback(trigger_ip, suspicion_reason)
+                
+                # snapshot last 5 seconds from ring buffer
+                past_pkts = [p[1] for p in self.recent_packets if now - p[0] <= 5.0]
+                self.active_incidents[trigger_ip] = {
+                    "trigger_ip": trigger_ip,
+                    "trigger_reason": suspicion_reason,
+                    "start_time": now,
+                    "end_time": now + 5.0,
+                    "packets": past_pkts
+                }
+
+        # Append to active incidents and check completion
+        completed_incidents = []
+        for inc_ip, inc in list(self.active_incidents.items()):
+            if now <= inc["end_time"]:
+                # Only add if it wasn't already in past_pkts (handled by time check, but since we snapshot it, 
+                # we just append new packets that arrive AFTER start_time)
+                # Actually, all packets arriving here are current, so we just append
+                if packet_data not in inc["packets"]:
+                    inc["packets"].append(packet_data)
+            else:
+                completed_incidents.append(inc)
+                del self.active_incidents[inc_ip]
+                
+        for inc in completed_incidents:
+            if self.incident_callback:
+                try:
+                    self.incident_callback(inc)
+                except Exception as e:
+                    print(f"[ERROR] Incident Callback Error: {e}")
 
         if self.emit_callback:
             try:
@@ -207,28 +249,28 @@ class PacketSniffer:
                 pass
 
     def _sniff_loop(self, target_iface):
-        try:
-            if not target_iface:
-                try:
-                    # Windows에서 conf.iface가 엉뚱한 가상 어댑터를 잡는 것을 방지하기 위해 라우팅 테이블 조회
-                    target_iface = conf.route.route('8.8.8.8')[0]
-                    print(f"[INFO] 활성 네트워크 어댑터 자동 감지: {target_iface}")
-                except Exception:
-                    pass
+        if not target_iface:
+            try:
+                # Windows에서 conf.iface가 엉뚱한 가상 어댑터를 잡는 것을 방지하기 위해 라우팅 테이블 조회
+                target_iface = conf.route.route('8.8.8.8')[0]
+                print(f"[INFO] 활성 네트워크 어댑터 자동 감지: {target_iface}")
+            except Exception:
+                pass
 
-            if target_iface:
-                print(f"[INFO] 캡처 시작 (어댑터: {target_iface})...")
-                while self._running:
+        if target_iface:
+            print(f"[INFO] 캡처 시작 (어댑터: {target_iface})...")
+        else:
+            print("[INFO] 캡처 시작 (전체/기본 어댑터)...")
+            
+        while self._running:
+            try:
+                if target_iface:
                     sniff(iface=target_iface, prn=self._packet_handler, store=False, timeout=1.0)
-            else:
-                print("[INFO] 캡처 시작 (전체/기본 어댑터)...")
-                while self._running:
+                else:
                     sniff(prn=self._packet_handler, store=False, timeout=1.0)
-        except Exception as e:
-            print("=" * 60)
-            print(f"[ERROR] 패킷 캡처 루프 오류: {e}")
-            print("=" * 60)
-            self._running = False
+            except Exception as e:
+                print(f"[WARNING] 패킷 캡처 중 오류 발생 (무시하고 계속 진행): {e}")
+                time.sleep(0.5) # 오류가 반복될 경우 CPU 과부하 방지
 
     def start(self):
         if self._running:
@@ -265,9 +307,12 @@ class PacketSniffer:
 _instance = PacketSniffer()
 
 def set_emit_callback(cb): _instance.set_emit_callback(cb)
+def set_incident_start_callback(cb):
+    PacketSniffer().set_incident_start_callback(cb)
+
+def set_incident_callback(cb): _instance.set_incident_callback(cb)
 def set_pause(paused): _instance.set_pause(paused)
 def set_aliases_policy(policies): _instance.set_aliases_policy(policies)
 def set_filter(f_dict): _instance.set_filter(f_dict)
-def set_packet_rules(rules): _instance.set_packet_rules(rules)
 def start_sniffing(): _instance.start()
 def stop_sniffing(): _instance.stop()

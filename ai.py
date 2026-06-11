@@ -82,3 +82,38 @@ def assess_ip_risk(ip_address, packets_history):
         return response.text
     except Exception as e:
         return f"⚠️ 위험도 분석 중 오류가 발생했습니다: {str(e)}"
+
+def analyze_incident(trigger_ip, trigger_reason, packets):
+    """
+    사고 전후 10초간의 패킷 맥락을 분석하여 리포트를 생성합니다.
+    """
+    if not API_KEY:
+        return "⚠️ 오류: GEMINI_API_KEY가 설정되지 않았습니다."
+        
+    if not packets:
+        return "분석할 패킷 데이터가 없습니다."
+        
+    try:
+        model = genai.GenerativeModel(MODEL_NAME)
+        
+        prompt = (
+            f"네트워크에서 보안 사고(또는 의심 트래픽)가 탐지되었습니다.\n"
+            f"- **관련 대상 IP**: {trigger_ip}\n"
+            f"- **탐지 사유**: {trigger_reason}\n\n"
+            f"다음은 해당 의심 트래픽 발생 시점을 기준으로 **전후 5초(총 10초) 동안 수집된 네트워크 패킷 로그**입니다.\n"
+            f"이 전체 맥락을 분석하여 다음 사항을 파악해 주세요:\n"
+            f"1. **사고 개요**: 어떤 종류의 공격이나 비정상적인 행위로 보이는지?\n"
+            f"2. **전조 증상**: 의심 트래픽 발생 직전(Before)에 포트 스캐닝이나 통신 시도 등 이상 징후가 있었는지?\n"
+            f"3. **사후 행위**: 의심 트래픽 이후(After)에 내부로 추가 페이로드가 들어오거나 정보 유출, 혹은 에러 응답 등이 관찰되었는지?\n"
+            f"4. **피해 가능성 및 대처 권고**: 현재 상황의 위험도는 어느 정도이며 어떻게 대응해야 하는가?\n\n"
+            f"반드시 마크다운(Markdown) 포맷으로 가독성 있게 작성해주시고, 전문가답지만 간결하게(전체 10~15줄 이내) 요약해주세요.\n\n"
+            f"### 패킷 로그 (시간순)\n"
+        )
+        
+        for p in packets:
+            prompt += f"[{p.get('time')}] {p.get('src')} -> {p.get('dst')} | {p.get('proto')} | {p.get('len')} bytes | {p.get('summary')}\n"
+            
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"⚠️ 사고 분석 리포트 생성 중 오류가 발생했습니다: {str(e)}"

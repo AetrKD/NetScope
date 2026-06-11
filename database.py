@@ -58,6 +58,16 @@ class DBManager:
             )
         """)
         cursor.execute("""
+            CREATE TABLE IF NOT EXISTS incident_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                trigger_ip TEXT NOT NULL,
+                trigger_reason TEXT,
+                report_text TEXT NOT NULL,
+                raw_packets TEXT
+            )
+        """)
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS ip_aliases (
                 ip TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -65,33 +75,13 @@ class DBManager:
                 description TEXT DEFAULT ''
             )
         """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS packet_rules (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                action TEXT NOT NULL DEFAULT 'HIGHLIGHT',
-                ip TEXT,
-                port TEXT,
-                proto TEXT,
-                direction TEXT,
-                min_size TEXT,
-                max_size TEXT,
-                description TEXT DEFAULT ''
-            )
-        """)
         # 성능 향상을 위한 인덱스 생성
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_packets_saved ON packets(is_saved)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_packets_highlighted ON packets(is_highlighted)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_packets_timestamp ON packets(timestamp)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_packets_src ON packets(src)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_packets_dst ON packets(dst)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_packets_proto ON packets(proto)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_packets_src_dst ON packets(src, dst)")
-
-        # 기존 DB 마이그레이션: description 컬럼이 없으면 추가
-        try:
-            cursor.execute("ALTER TABLE packet_rules ADD COLUMN description TEXT DEFAULT ''")
-        except sqlite3.OperationalError:
-            pass  # 이미 존재
 
         try:
             cursor.execute("ALTER TABLE ip_aliases ADD COLUMN policy TEXT DEFAULT 'SAVE_ALL'")
@@ -107,6 +97,24 @@ class DBManager:
             cursor.execute("ALTER TABLE packets ADD COLUMN is_suspicious INTEGER DEFAULT 0")
             cursor.execute("ALTER TABLE packets ADD COLUMN suspicion_reason TEXT DEFAULT ''")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_packets_suspicious ON packets(is_suspicious)")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE packets ADD COLUMN sport INTEGER")
+            cursor.execute("ALTER TABLE packets ADD COLUMN dport INTEGER")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE packets ADD COLUMN is_suspicious INTEGER DEFAULT 0")
+            cursor.execute("ALTER TABLE packets ADD COLUMN suspicion_reason TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_packets_sport ON packets(sport)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_packets_dport ON packets(dport)")
         except sqlite3.OperationalError:
             pass
 
@@ -134,11 +142,16 @@ class DBManager:
                 continue
 
             if items:
-                cursor.executemany("""
-                    INSERT INTO packets (timestamp, src, dst, proto, size, direction, summary, raw_hex, is_saved, is_highlighted, is_suspicious, suspicion_reason)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, items)
-                conn.commit()
+                try:
+                    with conn:
+                        cursor.executemany("""
+                            INSERT INTO packets (timestamp, src, dst, sport, dport, proto, size, direction, summary, raw_hex, is_saved, is_suspicious, suspicion_reason)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, items)
+                except Exception as e:
+                    import traceback
+                    print(f"[DB ERROR] _db_worker insert failed: {e}")
+                    traceback.print_exc()
 
                 for _ in items:
                     self.packet_queue.task_done()
@@ -153,7 +166,7 @@ class DBManager:
         self.db_thread = threading.Thread(target=self._db_worker, daemon=True)
         self.db_thread.start()
 
-    def save_packet_async(self, packet_data: dict, time_str: str, is_saved: bool, is_highlighted: bool, is_suspicious: bool = False, suspicion_reason: str = ""):
+    def save_packet_async(self, packet_data: dict, time_str: str, is_saved: bool, is_suspicious: bool = False, suspicion_reason: str = ""):
         """패킷을 큐에 적재합니다."""
         if not self.running:
             return
@@ -162,13 +175,14 @@ class DBManager:
             time_str,
             packet_data.get("src"),
             packet_data.get("dst"),
+            packet_data.get("sport"),
+            packet_data.get("dport"),
             packet_data.get("proto"),
             packet_data.get("len", 0),
             packet_data.get("direction"),
             packet_data.get("summary"),
             packet_data.get("raw"),
             int(is_saved),
-            int(is_highlighted),
             int(is_suspicious),
             suspicion_reason
         )
@@ -182,9 +196,7 @@ class DBManager:
             cursor = conn.cursor()
             where_clause = " FROM packets WHERE 1=1"
 
-            if db_type == 'HIGHLIGHT':
-                where_clause += " AND is_highlighted = 1"
-            elif db_type == 'ARCHIVE':
+            if db_type == 'ARCHIVE':
                 where_clause += " AND is_saved = 1"
             elif db_type == 'SUSPICIOUS':
                 where_clause += " AND is_suspicious = 1"
@@ -196,6 +208,15 @@ class DBManager:
             if f_ip:
                 where_clause += " AND (src LIKE ? OR dst LIKE ?)"
                 params.extend([f"{f_ip}%", f"{f_ip}%"])
+
+            f_port = filters.get("port", "").strip()
+            if f_port:
+                try:
+                    port_val = int(f_port)
+                    where_clause += " AND (sport = ? OR dport = ?)"
+                    params.extend([port_val, port_val])
+                except ValueError:
+                    pass
 
             f_proto = filters.get("proto", "").strip()
             if f_proto:
@@ -250,6 +271,8 @@ class DBManager:
                     "time": row["timestamp"],
                     "src": row["src"],
                     "dst": row["dst"],
+                    "sport": row["sport"] if "sport" in row.keys() else None,
+                    "dport": row["dport"] if "dport" in row.keys() else None,
                     "proto": row["proto"],
                     "len": row["size"],
                     "direction": row["direction"],
@@ -282,6 +305,37 @@ class DBManager:
             print("[DB Error query_suspicious_ips]", e)
             return []
 
+    # ─── 사고 리포트 (Incident Reports) ──────────────────────────────
+    def save_incident_report(self, ip: str, reason: str, report_text: str, packets_json: str):
+        conn = self.get_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO incident_reports (timestamp, trigger_ip, trigger_reason, report_text, raw_packets)
+                VALUES (datetime('now', 'localtime'), ?, ?, ?, ?)
+            """, (ip, reason, report_text, packets_json))
+            conn.commit()
+        except Exception as e:
+            print("[DB Error save_incident_report]", e)
+
+    def query_incident_reports(self) -> list:
+        conn = self.get_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, timestamp, trigger_ip, trigger_reason, report_text FROM incident_reports ORDER BY id DESC LIMIT 50")
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception:
+            return []
+
+    def delete_incident_report(self, report_id: int):
+        conn = self.get_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM incident_reports WHERE id = ?", (report_id,))
+            conn.commit()
+        except Exception as e:
+            print("[DB Error delete_incident_report]", e)
+
     # ─── 삭제 ──────────────────────────────────────────────────
     def delete_packets(self, ids: list[int], db_type: str = 'ARCHIVE') -> int:
         """지정된 id 목록에 해당하는 패킷들을 논리 삭제합니다."""
@@ -292,17 +346,15 @@ class DBManager:
             cursor = conn.cursor()
             placeholders = ','.join(['?'] * len(ids))
 
-            if db_type == 'HIGHLIGHT':
-                cursor.execute(f"UPDATE packets SET is_highlighted = 0 WHERE id IN ({placeholders})", ids)
-            elif db_type == 'ARCHIVE':
+            if db_type == 'ARCHIVE':
                 cursor.execute(f"UPDATE packets SET is_saved = 0 WHERE id IN ({placeholders})", ids)
             elif db_type == 'SUSPICIOUS':
                 cursor.execute(f"UPDATE packets SET is_suspicious = 0 WHERE id IN ({placeholders})", ids)
             else:
-                cursor.execute(f"UPDATE packets SET is_saved = 0, is_highlighted = 0, is_suspicious = 0 WHERE id IN ({placeholders})", ids)
+                cursor.execute(f"UPDATE packets SET is_saved = 0, is_suspicious = 0 WHERE id IN ({placeholders})", ids)
 
             # 모두 0이 되면 완전 삭제 (지정된 ID 범위 내에서만 처리하여 전체 스캔 방지)
-            cursor.execute(f"DELETE FROM packets WHERE id IN ({placeholders}) AND is_saved = 0 AND is_highlighted = 0 AND is_suspicious = 0", ids)
+            cursor.execute(f"DELETE FROM packets WHERE id IN ({placeholders}) AND is_saved = 0 AND is_suspicious = 0", ids)
 
             conn.commit()
             return len(ids)
@@ -340,9 +392,9 @@ class DBManager:
     def set_alias(self, ip: str, name: str, policy: str = 'SAVE_ALL', description: str = ''):
         conn = self.get_conn()
         try:
-            cursor = conn.cursor()
-            cursor.execute("INSERT OR REPLACE INTO ip_aliases (ip, name, policy, description) VALUES (?, ?, ?, ?)", (ip, name, policy, description))
-            conn.commit()
+            with conn:
+                cursor = conn.cursor()
+                cursor.execute("INSERT OR REPLACE INTO ip_aliases (ip, name, policy, description) VALUES (?, ?, ?, ?)", (ip, name, policy, description))
         except Exception as e:
             print("[DB Error set_alias]", e)
 
@@ -355,54 +407,6 @@ class DBManager:
         except Exception as e:
             print("[DB Error delete_alias]", e)
 
-    # ─── 패킷 규칙 ────────────────────────────────────────────
-    def get_rules(self) -> list:
-        """DB에 저장된 패킷 규칙(강조/무시) 목록을 불러옵니다."""
-        conn = self.get_conn()
-        try:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("SELECT action, ip, port, proto, direction, min_size, max_size, description FROM packet_rules ORDER BY id")
-                rows = cursor.fetchall()
-            except sqlite3.OperationalError:
-                rows = []
-            return [{
-                'action': row['action'],
-                'ip': row['ip'] or '',
-                'port': row['port'] or '',
-                'proto': row['proto'] or '',
-                'dir': row['direction'] or '',
-                'min_size': row['min_size'] or '',
-                'max_size': row['max_size'] or '',
-                'description': row['description'] or '',
-            } for row in rows]
-        except Exception:
-            return []
-
-    def save_rules(self, rules: list):
-        """패킷 규칙 목록을 DB에 전체 덮어쓰기합니다."""
-        conn = self.get_conn()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM packet_rules")
-            for r in rules:
-                cursor.execute("""
-                    INSERT INTO packet_rules (action, ip, port, proto, direction, min_size, max_size, description)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    r.get('action', 'HIGHLIGHT'),
-                    r.get('ip', ''),
-                    r.get('port', ''),
-                    r.get('proto', ''),
-                    r.get('dir', ''),
-                    r.get('min_size', ''),
-                    r.get('max_size', ''),
-                    r.get('description', ''),
-                ))
-            conn.commit()
-        except Exception as e:
-            print("[DB Error save_rules]", e)
-
 
 # ─── 전역 싱글턴 인스턴스 ─────────────────────────────────────
 main_db = DBManager(DB_FILE)
@@ -414,17 +418,14 @@ def init_db():
 def start_db_writer():
     main_db.start_writer()
 
-def save_packet_async(packet_data: dict, time_str: str, is_saved: bool, is_highlighted: bool, is_suspicious: bool = False, suspicion_reason: str = ""):
-    main_db.save_packet_async(packet_data, time_str, is_saved, is_highlighted, is_suspicious, suspicion_reason)
+def save_packet_async(packet_data: dict, time_str: str, is_saved: bool, is_suspicious: bool = False, suspicion_reason: str = ""):
+    main_db.save_packet_async(packet_data, time_str, is_saved, is_suspicious, suspicion_reason)
 
 def query_history(filters: dict):
     return main_db.query_history(filters, db_type='ARCHIVE')
 
 def query_device_history(filters: dict):
     return main_db.query_history(filters, db_type='ALL')
-
-def query_highlight_history(filters: dict):
-    return main_db.query_history(filters, db_type='HIGHLIGHT')
 
 def query_suspicious_packets(filters: dict):
     return main_db.query_history(filters, db_type='SUSPICIOUS')
@@ -441,9 +442,6 @@ def delete_device_packets(ids: list[int]):
 def delete_device_all_packets(ip: str) -> int:
     return main_db.delete_device_all_packets(ip)
 
-def delete_highlight_packets(ids: list[int]):
-    return main_db.delete_packets(ids, db_type='HIGHLIGHT')
-
 def delete_suspicious_packets(ids: list[int]):
     return main_db.delete_packets(ids, db_type='SUSPICIOUS')
 
@@ -456,8 +454,11 @@ def set_alias(ip: str, name: str, policy: str = 'SAVE_ALL', description: str = '
 def delete_alias(ip: str):
     main_db.delete_alias(ip)
 
-def get_rules():
-    return main_db.get_rules()
+def save_incident_report(ip: str, reason: str, report_text: str, packets_json: str):
+    main_db.save_incident_report(ip, reason, report_text, packets_json)
 
-def save_rules(rules: list):
-    main_db.save_rules(rules)
+def query_incident_reports():
+    return main_db.query_incident_reports()
+
+def delete_incident_report(report_id: int):
+    main_db.delete_incident_report(report_id)

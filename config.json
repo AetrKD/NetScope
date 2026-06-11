@@ -1,7 +1,7 @@
 {
     "server": {
         "host": "0.0.0.0",
-        "port": 25544,
+        "port": 25565,
         "iface": null
     }
 }

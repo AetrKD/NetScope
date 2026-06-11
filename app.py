@@ -18,9 +18,9 @@ import json
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from database import start_db_writer, query_history, query_highlight_history, query_device_history, query_suspicious_packets, query_suspicious_ips, delete_history_packets, delete_highlight_packets, delete_device_packets, delete_device_all_packets, delete_suspicious_packets, get_aliases, set_alias, delete_alias, get_rules, save_rules
-from sniffer import start_sniffing, set_pause, set_filter, set_emit_callback, set_packet_rules, set_aliases_policy, save_pcap
-from ai import analyze_packet_data, assess_ip_risk
+from database import start_db_writer, query_history, query_device_history, query_suspicious_packets, query_suspicious_ips, delete_history_packets, delete_device_packets, delete_device_all_packets, delete_suspicious_packets, get_aliases, set_alias, delete_alias, save_incident_report, query_incident_reports, delete_incident_report
+from sniffer import start_sniffing, set_pause, set_filter, set_emit_callback, set_aliases_policy, save_pcap, set_incident_callback, set_incident_start_callback
+from ai import analyze_packet_data, assess_ip_risk, analyze_incident
 
 # ─── 전역 상태 변수 ───────────────────────────────────────────
 _main_loop: asyncio.AbstractEventLoop | None = None
@@ -38,15 +38,6 @@ async def lifespan(app: FastAPI):
     # DB 초기화 및 백그라운드 워커 시작
     start_db_writer()
 
-    # DB에서 저장된 패킷 규칙 복원
-    try:
-        saved_rules = get_rules()
-        if saved_rules:
-            set_packet_rules(saved_rules)
-            print(f"[INFO] DB에서 패킷 규칙 {len(saved_rules)}개 복원 완료")
-    except Exception as e:
-        print(f"[WARNING] 패킷 규칙 복원 실패: {e}")
-
     try:
         aliases = get_aliases()
         set_aliases_policy(aliases)
@@ -55,6 +46,20 @@ async def lifespan(app: FastAPI):
 
     # sniffer 콜백 등록
     set_emit_callback(sync_broadcast)
+    
+    def on_incident_start(ip, reason):
+        if _main_loop and not _main_loop.is_closed():
+            asyncio.run_coroutine_threadsafe(
+                broadcast("incident_start", {"src": ip, "dst": "대상 서버", "suspicious": True, "suspicion_reason": reason}),
+                _main_loop
+            )
+    set_incident_start_callback(on_incident_start)
+
+    def on_incident_ready(inc):
+        if _main_loop and not _main_loop.is_closed():
+            asyncio.run_coroutine_threadsafe(process_incident(inc), _main_loop)
+    
+    set_incident_callback(on_incident_ready)
 
     # 패킷 캡쳐 시작 (새로 구현된 AsyncSniffer가 스레드 풀을 내부적으로 관리함)
     start_sniffing()
@@ -101,7 +106,7 @@ async def packet_batch_worker():
             packets.append(first_pkt)
 
             start_time = loop.time()
-            while len(packets) < 100:
+            while True:
                 elapsed = loop.time() - start_time
                 if elapsed >= 0.1:
                     break
@@ -137,12 +142,33 @@ def sync_broadcast(event: str, data: dict):
         except Exception as e:
             print(f"[DEBUG] Broadcast error: {e}")
 
+async def process_incident(inc: dict):
+    try:
+        report_text = await asyncio.to_thread(
+            analyze_incident,
+            inc["trigger_ip"],
+            inc["trigger_reason"],
+            inc["packets"]
+        )
+        # DB 저장
+        packets_json = json.dumps(inc["packets"])
+        await asyncio.to_thread(
+            save_incident_report,
+            inc["trigger_ip"],
+            inc["trigger_reason"],
+            report_text,
+            packets_json
+        )
+        # 브로드캐스트
+        await broadcast("new_incident", {
+            "trigger_ip": inc["trigger_ip"],
+            "reason": inc["trigger_reason"]
+        })
+    except Exception as e:
+        print(f"[Error] process_incident failed: {e}")
 
-# sniffer.py 콜백 등록
-set_emit_callback(sync_broadcast)
 
-
-# ─── 라우트: 페이지 ──────────────────────────────────────────
+# ─── 라우트: 메인 페이지 ──────────────────────────────────────────
 @app.get('/', response_class=HTMLResponse)
 async def index(request: Request):
     start_db_writer()
@@ -166,6 +192,12 @@ async def websocket_endpoint(ws: WebSocket):
             await ws.receive_text()
     except WebSocketDisconnect:
         print(f"[INFO] WebSocket 연결 끊김: {client_host}")
+    except Exception as e:
+        # websockets 버그로 인한 AssertionError(keepalive ping failed) 무시
+        if isinstance(e, AssertionError) and "keepalive ping failed" in str(e):
+            print(f"[INFO] WebSocket 연결 끊김 (비정상 종료): {client_host}")
+        else:
+            print(f"[ERROR] WebSocket 오류 ({client_host}): {e}")
     finally:
         async with _ws_lock:
             _ws_clients.discard(ws)
@@ -221,15 +253,6 @@ async def api_device_history(request: Request):
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
-@app.post('/api/highlight-history')
-async def api_highlight_history(request: Request):
-    try:
-        data = await request.json()
-        ret = await asyncio.to_thread(query_highlight_history, data)
-        return JSONResponse({"success": True, "data": ret["data"], "total": ret["total"]})
-    except Exception as e:
-        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
-
 
 @app.post('/api/suspicious-history')
 async def api_suspicious_history(request: Request):
@@ -255,9 +278,7 @@ async def api_delete_packets(request: Request):
         data = await request.json()
         db_type = data.get('db_type', 'ARCHIVE')
         ids = data.get('ids', [])
-        if db_type == 'HIGHLIGHT':
-            deleted_count = await asyncio.to_thread(delete_highlight_packets, ids)
-        elif db_type == 'DEVICE_DETAIL':
+        if db_type == 'DEVICE_DETAIL':
             deleted_count = await asyncio.to_thread(delete_device_packets, ids)
         elif db_type == 'SUSPICIOUS':
             deleted_count = await asyncio.to_thread(delete_suspicious_packets, ids)
@@ -301,48 +322,6 @@ async def api_ai_risk_assess(request: Request):
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
-# ─── 라우트: 패킷 규칙 ──────────────────────────────────────
-@app.post('/api/set-rules')
-async def api_set_rules(request: Request):
-    try:
-        data = await request.json()
-        rules = data.get('rules', [])
-        cleaned_rules = []
-        for r in rules:
-            action = r.get('action', 'HIGHLIGHT').strip().upper()
-            if action not in ['HIGHLIGHT', 'IGNORE']:
-                action = 'HIGHLIGHT'
-            ip = r.get('ip', '').strip()
-            port = r.get('port', '').strip()
-            proto = r.get('proto', '').strip()
-            direction = r.get('dir', '').strip()
-            min_size = str(r.get('min_size', '')).strip()
-            max_size = str(r.get('max_size', '')).strip()
-            description = r.get('description', '').strip()
-
-            if not any([ip, port, proto, direction, min_size, max_size]):
-                continue
-
-            cleaned_rules.append({
-                'action': action, 'ip': ip, 'port': port, 'proto': proto,
-                'dir': direction, 'min_size': min_size, 'max_size': max_size,
-                'description': description,
-            })
-        set_packet_rules(cleaned_rules)
-        save_rules(cleaned_rules)
-        return JSONResponse({"success": True, "rules": cleaned_rules})
-    except Exception as e:
-        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
-
-
-@app.get('/api/rules')
-async def api_get_rules():
-    try:
-        rules = get_rules()
-        return JSONResponse({"success": True, "rules": rules})
-    except Exception as e:
-        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
-
 
 # ─── 라우트: IP 별명 ─────────────────────────────────────────
 @app.get('/api/aliases')
@@ -361,11 +340,12 @@ async def api_aliases_post(request: Request):
         name = data.get('name', '').strip()
         policy = data.get('policy', 'SAVE_ALL').strip()
         description = data.get('desc', '').strip()
-        if not ip or not name:
-            return JSONResponse({"success": False, "error": "IP와 이름이 모두 필요합니다."}, status_code=400)
+        if not ip:
+            return JSONResponse({"success": False, "msg": "IP가 필요합니다."}, status_code=400)
         
-        set_alias(ip, name, policy, description)
-        set_aliases_policy(get_aliases())
+        await asyncio.to_thread(set_alias, ip, name, policy, description)
+        aliases = await asyncio.to_thread(get_aliases)
+        set_aliases_policy(aliases)
         return JSONResponse({"success": True, "ip": ip, "name": name, "policy": policy})
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
@@ -378,10 +358,27 @@ async def api_aliases_delete(request: Request):
         ip = data.get('ip', '').strip()
         if not ip:
             return JSONResponse({"success": False, "error": "IP가 필요합니다."}, status_code=400)
-        delete_alias(ip)
-        delete_device_all_packets(ip)
-        set_aliases_policy(get_aliases())
+        await asyncio.to_thread(delete_alias, ip)
+        await asyncio.to_thread(delete_device_all_packets, ip)
+        aliases = await asyncio.to_thread(get_aliases)
+        set_aliases_policy(aliases)
         return JSONResponse({"success": True, "ip": ip})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+@app.get('/api/incidents')
+async def api_incidents_get():
+    try:
+        reports = await asyncio.to_thread(query_incident_reports)
+        return JSONResponse({"success": True, "data": reports})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+@app.delete('/api/incident/{report_id}')
+async def api_delete_incident(report_id: int):
+    try:
+        await asyncio.to_thread(delete_incident_report, report_id)
+        return JSONResponse({"success": True})
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 

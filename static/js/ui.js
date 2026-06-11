@@ -5,9 +5,10 @@
 // ── IP 별명 모달 ─────────────────────────────────────────
 const aliasModal = $('aliasModal'), aliasListC = $('aliasListContainer'), aliasEmpty = $('aliasEmptyState');
 function renderAliasList() {
+    if (!aliasListC) return;
     aliasListC.innerHTML = '';
     const keys = Object.keys(ipAliases);
-    if (!keys.length) { aliasListC.appendChild(aliasEmpty); return; }
+    if (!keys.length) { if(aliasEmpty) aliasListC.appendChild(aliasEmpty); return; }
     keys.forEach(ip => {
         const item = document.createElement('div'); item.className = 'rule-item';
         const data = ipAliases[ip] || {};
@@ -18,53 +19,13 @@ function renderAliasList() {
         aliasListC.appendChild(item);
     });
 }
-window.removeAlias = function(ip) {
-    const modal = document.getElementById('deleteConfirmModal');
-    const targetEl = document.getElementById('deleteTargetIp');
-    if (!modal || !targetEl) return;
-    
-    targetEl.textContent = ip;
-    modal.classList.add('active');
-    
-    // 이전에 등록된 이벤트 리스너가 있다면 제거하기 위해 복제
-    const confirmBtn = document.getElementById('confirmDeleteBtn');
-    const newConfirmBtn = confirmBtn.cloneNode(true);
-    confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
-    
-    newConfirmBtn.addEventListener('click', async () => {
-        try { 
-            const r = await (await fetch('/api/aliases',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip})})).json(); 
-            if(r.success) {
-                delete ipAliases[ip]; 
-                renderAliasList();
-                if (typeof renderDevicesGrid === 'function') renderDevicesGrid();
-            } 
-        } catch(e){}
-        modal.classList.remove('active');
-    });
-};
+
 
 document.addEventListener('DOMContentLoaded', () => {
     const cancelBtn = document.getElementById('cancelDeleteBtn');
     if (cancelBtn) cancelBtn.addEventListener('click', () => {
         document.getElementById('deleteConfirmModal').classList.remove('active');
     });
-    if($('addAliasBtn')) {
-        $('addAliasBtn').onclick=async()=>{
-            const ip=$('aliasIp').value.trim();
-            const name=$('aliasName').value.trim();
-            const desc=$('aliasDesc').value.trim();
-            const policy=$('aliasPolicy').value;
-            if(!ip||!name) return alert("IP와 이름을 입력하세요");
-            const r=await(await fetch('/api/aliases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,name,policy,desc})})).json(); 
-            if(r.success) { 
-                ipAliases[ip] = {name, policy, description: desc};
-                $('aliasIp').value=''; $('aliasName').value=''; $('aliasDesc').value='';
-                if($('addAliasBtn')) $('addAliasBtn').textContent = '+ 장비 등록';
-                if (typeof renderDevicesGrid === 'function') renderDevicesGrid();
-            } else alert(r.error);
-        };
-    }
 });
 
 

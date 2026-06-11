@@ -93,6 +93,8 @@ function setMode(mode) {
     if (tabDevices) tabDevices.classList.remove('active');
     const tabSuspicious = $('tabSuspicious');
     if (tabSuspicious) tabSuspicious.classList.remove('active');
+    const tabIncidents = $('tabIncidents');
+    if (tabIncidents) tabIncidents.classList.remove('active');
 
     const delBtn = $('deleteSelectedBtn'), selAll = $('selectAllCheckbox');
     const archMax = $('archiveMaxPacketsSelect'), pgWrap = $('paginationWrap'), batchBtn = $('batchAnalyzeBtn');
@@ -110,6 +112,7 @@ function setMode(mode) {
         if (chartsGrid) chartsGrid.style.display = 'grid';
         if (devicesView) devicesView.style.display = 'none';
         if (suspiciousIpView) suspiciousIpView.style.display = 'none';
+        if ($('incidentsView')) $('incidentsView').style.display = 'none';
         if (aliasFormContainer) aliasFormContainer.style.display = 'none';
         if (packetSection) packetSection.style.display = 'flex';
         pauseBtn.style.display = 'flex';
@@ -132,6 +135,7 @@ function setMode(mode) {
         if (chartsGrid) chartsGrid.style.display = 'none';
         if (devicesView) devicesView.style.display = 'flex';
         if (suspiciousIpView) suspiciousIpView.style.display = 'none';
+        if ($('incidentsView')) $('incidentsView').style.display = 'none';
         if (aliasFormContainer) aliasFormContainer.style.display = 'block';
         if (packetSection) packetSection.style.display = 'none';
         pauseBtn.style.display = 'none';
@@ -156,6 +160,7 @@ function setMode(mode) {
         if (chartsGrid) chartsGrid.style.display = 'none';
         if (devicesView) devicesView.style.display = 'none';
         if (suspiciousIpView) suspiciousIpView.style.display = 'none';
+        if ($('incidentsView')) $('incidentsView').style.display = 'none';
         if (aliasFormContainer) aliasFormContainer.style.display = 'none';
         if (packetSection) packetSection.style.display = 'flex';
         pauseBtn.style.display = 'none';
@@ -177,6 +182,7 @@ function setMode(mode) {
         if (chartsGrid) chartsGrid.style.display = 'none';
         if (devicesView) devicesView.style.display = 'none';
         if (suspiciousIpView) suspiciousIpView.style.display = 'flex';
+        if ($('incidentsView')) $('incidentsView').style.display = 'none';
         if (aliasFormContainer) aliasFormContainer.style.display = 'none';
         if (packetSection) packetSection.style.display = 'none';
         pauseBtn.style.display = 'none';
@@ -198,6 +204,7 @@ function setMode(mode) {
         if (chartsGrid) chartsGrid.style.display = 'none';
         if (devicesView) devicesView.style.display = 'none';
         if (suspiciousIpView) suspiciousIpView.style.display = 'none';
+        if ($('incidentsView')) $('incidentsView').style.display = 'none';
         if (aliasFormContainer) aliasFormContainer.style.display = 'none';
         if (packetSection) packetSection.style.display = 'flex';
         pauseBtn.style.display = 'none';
@@ -210,6 +217,20 @@ function setMode(mode) {
             $('colReasonHeader').closest('.packet-header').classList.add('with-reason');
         }
         currentPage = 1; sendFilter();
+    } else if (mode === 'INCIDENTS') {
+        if (tabIncidents) tabIncidents.classList.add('active'); 
+        topTitle.textContent = '📄 자동 사고 분석 리포트';
+        if(topSubtitle) topSubtitle.textContent = '의심 트래픽 전후 10초간의 맥락을 AI가 자동으로 분석한 리포트입니다.';
+        if ($('backToDevicesBtn')) $('backToDevicesBtn').style.display = 'none';
+        if ($('aiRiskAssessBtn')) $('aiRiskAssessBtn').style.display = 'none';
+        if (chartsGrid) chartsGrid.style.display = 'none';
+        if (devicesView) devicesView.style.display = 'none';
+        if (suspiciousIpView) suspiciousIpView.style.display = 'none';
+        if ($('incidentsView')) $('incidentsView').style.display = 'block';
+        if (aliasFormContainer) aliasFormContainer.style.display = 'none';
+        if (packetSection) packetSection.style.display = 'none';
+        pauseBtn.style.display = 'none';
+        renderIncidentsGrid();
     }
 }
 tabLive.addEventListener('click', () => {
@@ -218,6 +239,8 @@ tabLive.addEventListener('click', () => {
 });
 if($('tabDevices')) $('tabDevices').addEventListener('click', () => setMode('DEVICES'));
 if($('tabSuspicious')) $('tabSuspicious').addEventListener('click', () => setMode('SUSPICIOUS'));
+if($('tabIncidents')) $('tabIncidents').addEventListener('click', () => setMode('INCIDENTS'));
+if($('refreshIncidentsBtn')) $('refreshIncidentsBtn').addEventListener('click', () => renderIncidentsGrid());
 
 function renderDevicesGrid() {
     const grid = $('devicesGrid');
@@ -468,7 +491,6 @@ async function renderSuspiciousIpGrid() {
             delBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 if (window.removeAlias) window.removeAlias(ip);
-                setTimeout(renderSuspiciousIpGrid, 100);
             });
 
             grid.appendChild(card);
@@ -521,17 +543,20 @@ window.removeAlias = function(ip) {
     modal.classList.add('active');
     
     const cancelBtn = $('cancelDeleteBtn');
-    const confirmBtn = $('confirmDeleteBtn');
+    let confirmBtn = $('confirmDeleteBtn');
+    
+    // 이전 이벤트 리스너 제거를 위해 노드 복제
+    const newConfirmBtn = confirmBtn.cloneNode(true);
+    confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
+    confirmBtn = newConfirmBtn;
     
     const cleanup = () => {
         modal.classList.remove('active');
-        cancelBtn.removeEventListener('click', onCancel);
-        confirmBtn.removeEventListener('click', onConfirm);
     };
     
-    const onCancel = () => { cleanup(); };
+    cancelBtn.onclick = cleanup;
     
-    const onConfirm = async () => {
+    confirmBtn.addEventListener('click', async () => {
         try {
             const r = await (await fetch('/api/aliases', {
                 method: 'DELETE',
@@ -541,8 +566,9 @@ window.removeAlias = function(ip) {
             
             if (r.success) {
                 delete ipAliases[ip];
-                if (currentMode === 'DEVICES') renderDevicesGrid();
-                if (currentMode === 'SUSPICIOUS') renderSuspiciousIpGrid();
+                if (currentMode === 'DEVICES' && typeof renderDevicesGrid === 'function') renderDevicesGrid();
+                if (currentMode === 'SUSPICIOUS' && typeof renderSuspiciousIpGrid === 'function') renderSuspiciousIpGrid();
+                if (typeof renderAliasList === 'function') renderAliasList();
                 cleanup();
             } else {
                 alert('삭제 실패: ' + r.error);
@@ -552,10 +578,7 @@ window.removeAlias = function(ip) {
             alert('삭제 오류: ' + err.message);
             cleanup();
         }
-    };
-    
-    cancelBtn.addEventListener('click', onCancel);
-    confirmBtn.addEventListener('click', onConfirm);
+    });
 };
 
 // ── 삭제 ─────────────────────────────────────────────────
@@ -757,26 +780,30 @@ onSocket('new_packets', arr => {
     }
 });
 
-function processPacketData(data) {
-    // 전역 통계 및 차트 데이터는 어떤 모드에서도 항상 업데이트
-    const dir = data.direction || 'OTHER';
-    total++; 
-    if (dir==='INBOUND'){ inCount++; ppsIn++; } 
-    else if(dir==='OUTBOUND'){ outCount++; ppsOut++; } 
-    else ppsIn++;
-    
-    countTotal.textContent = total; 
-    countIn.textContent = inCount; 
-    countOut.textContent = outCount;
+function processPacketData(data, skipDom = false, skipStats = false) {
+    if (!skipStats) {
+        // 전역 통계 및 차트 데이터는 어떤 모드에서도 항상 업데이트
+        const dir = data.direction || 'OTHER';
+        total++; 
+        if (dir==='INBOUND'){ inCount++; ppsIn++; } 
+        else if(dir==='OUTBOUND'){ outCount++; ppsOut++; } 
+        else ppsIn++;
+        
+        countTotal.textContent = total; 
+        countIn.textContent = inCount; 
+        countOut.textContent = outCount;
 
-    // Top IP 추적 (최근 100개 패킷)
-    last100Ips.unshift(data.src, data.dst);
-    if (last100Ips.length > 200) last100Ips = last100Ips.slice(0, 200);
+        // Top IP 추적 (최근 100개 패킷)
+        last100Ips.unshift(data.src, data.dst);
+        if (last100Ips.length > 200) last100Ips = last100Ips.slice(0, 200);
 
-    // Toast notification for suspicious packets in any mode
-    if (data.suspicious) {
-        showSuspiciousToast(data);
+        // Toast notification for suspicious packets in any mode
+        if (data.suspicious) {
+            showSuspiciousToast(data);
+        }
     }
+
+    if (skipDom) return null;
 
     // 현재 LIVE 모드가 아니면 리스트 렌더링은 스킵
     if (currentMode !== 'LIVE') return null;
@@ -791,7 +818,7 @@ function processPacketData(data) {
 
     const isSuspicious = data.suspicious;
     const row = document.createElement('div');
-    row.className = 'packet-row' + (data.highlight ? ' highlighted-packet' : '') + (isSuspicious ? ' suspicious' : '');
+    row.className = 'packet-row' + (isSuspicious ? ' suspicious' : '');
     row.dataset.pkt = JSON.stringify(data);
     row.innerHTML = `<div class="col-checkbox"><input type="checkbox" class="row-checkbox" value="${data.no}"></div>
         <div class="col-no">${data.no}</div>
@@ -1024,3 +1051,87 @@ if ($('closePanelBtn')) {
         if ($('sideToggleIcon')) $('sideToggleIcon').textContent = '◀';
     });
 }
+
+// ── 자동 사고 분석 리포트 기능 ──────────────────────────────
+async function renderIncidentsGrid() {
+    const grid = $('incidentsGrid');
+    if (!grid) return;
+    grid.innerHTML = '<div style="color:var(--text-secondary);">로딩 중...</div>';
+    
+    try {
+        const res = await fetch('/api/incidents');
+        const r = await res.json();
+        
+        if (!r.success) throw new Error(r.error || "리포트 로드 실패");
+        
+        if (!r.data || r.data.length === 0) {
+            grid.innerHTML = `<div class="empty-state" style="padding: 40px; grid-column: 1 / -1;">
+                <div class="empty-icon">📄</div>
+                <div class="empty-title">분석된 사고 리포트가 없습니다.</div>
+                <div class="empty-desc">의심 트래픽이 발생하면 AI가 자동으로 전후 맥락을 분석하여 이곳에 리포트를 생성합니다. (장비 정책이 '자동 (AI)'일 때 활성화)</div>
+            </div>`;
+            return;
+        }
+        
+        grid.innerHTML = '';
+        r.data.forEach(inc => {
+            const card = document.createElement('div');
+            card.className = 'device-card';
+            card.style.display = 'block';
+            card.style.cursor = 'default';
+            card.innerHTML = `
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:15px;">
+                    <div>
+                        <div style="font-size: 1.1rem; font-weight:700; color:var(--accent-red); margin-bottom:5px;">🚨 ${inc.trigger_reason}</div>
+                        <div style="font-size: 0.9rem; color:var(--text-secondary);">대상 IP: <span style="color:var(--text-primary); font-family:var(--font-mono);">${inc.trigger_ip}</span></div>
+                    </div>
+                    <div style="display:flex; flex-direction:column; align-items:flex-end; gap:8px;">
+                        <div style="font-size: 0.85rem; color:var(--text-secondary);">${inc.timestamp}</div>
+                        <button class="btn btn-secondary btn-delete-incident" data-id="${inc.id}" style="padding:4px 8px; font-size:0.8rem; background:rgba(244,63,94,0.1); color:var(--accent-red); border:1px solid rgba(244,63,94,0.2);">🗑️ 삭제</button>
+                    </div>
+                </div>
+                <div class="markdown-body" style="background:var(--bg-card); padding:15px; border-radius:8px; font-size:0.9rem;">
+                    ${typeof marked !== 'undefined' ? marked.parse(inc.report_text) : inc.report_text}
+                </div>
+            `;
+            grid.appendChild(card);
+        });
+
+        // 삭제 이벤트 리스너 등록
+        document.querySelectorAll('.btn-delete-incident').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                if (!confirm("이 리포트를 삭제하시겠습니까?")) return;
+                const id = e.target.getAttribute('data-id');
+                try {
+                    const res = await fetch(`/api/incident/${id}`, { method: 'DELETE' });
+                    const r = await res.json();
+                    if (r.success) {
+                        renderIncidentsGrid();
+                    } else {
+                        alert("삭제 실패: " + r.error);
+                    }
+                } catch(err) {
+                    alert("오류: " + err.message);
+                }
+            });
+        });
+    } catch(e) {
+        grid.innerHTML = `<div style="color:var(--accent-red);">오류: ${e.message}</div>`;
+    }
+}
+
+onSocket('new_incident', (data) => {
+    // 토스트 팝업 (toast alert)
+    alert(`[의심 트래픽 자동 분석 완료]\n대상 IP: ${data.trigger_ip}\n사유: ${data.reason}\n'사고 분석 리포트' 메뉴에서 확인하세요!`);
+    
+    // 만약 현재 INCIDENTS 탭을 보고 있다면 리프레시
+    if (typeof currentMode !== 'undefined' && currentMode === 'INCIDENTS') {
+        renderIncidentsGrid();
+    }
+});
+
+
+onSocket('incident_start', (data) => {
+    // data: { src, dst, suspicious, suspicion_reason }
+    showSuspiciousToast(data);
+});
